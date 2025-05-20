@@ -1,5 +1,10 @@
 MONAD BOX auto claim
 
+biar jalan 24jam
+```bash
+screen -S monadbox
+```
+
 ```bash
 git clone https://github.com/karpal/monadbox.git
 cd monadbox
@@ -18,3 +23,8 @@ nano .env
 jalankan
 ```bash
 node bot.js
+
+untuk kelar tanpa close 
+CTRL+AD
+
+KaRPaL
