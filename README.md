@@ -23,7 +23,7 @@ nano .env
 jalankan
 ```bash
 node bot.js
-
+```
 untuk keluar tanpa close 
 CTRL+AD
 
