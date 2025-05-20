@@ -1,40 +1,60 @@
 require("dotenv").config();
-const { ethers } = require("ethers");
+const ethers = require("ethers");
 const fetch = (...args) => import("node-fetch").then(({ default: fetch }) => fetch(...args));
 
-const PRIVATE_KEY = process.env.PRIVATE_KEY;
-const PROVIDER_URL = process.env.PROVIDER_URL;
-const CONTRACT_ADDRESS = process.env.CONTRACT_ADDRESS;
-const FID = process.env.FID;
-const UPSTASH_AUTH = process.env.UPSTASH_AUTH;
+const { PRIVATE_KEY, PROVIDER_URL, FID, UPSTASH_AUTH } = process.env;
 const CLAIM_INTERVAL = 3 * 60 * 60 * 1000; // 3 jam
 
-if (!PRIVATE_KEY || !PROVIDER_URL || !CONTRACT_ADDRESS || !FID || !UPSTASH_AUTH) {
-  console.error("❌ Lengkapi PRIVATE_KEY, PROVIDER_URL, CONTRACT_ADDRESS, FID, UPSTASH_AUTH di .env");
+if (!PRIVATE_KEY || !PROVIDER_URL || !FID || !UPSTASH_AUTH) {
+  console.error("❌ Harap isi semua variabel di file .env");
   process.exit(1);
 }
 
-// ABI klaim sesuai smart contract di Monad, contoh minimal:
-const ABI = [
-  "function claimBox(uint256 fid) public returns (bool)"
-];
-
-const provider = new ethers.providers.JsonRpcProvider(PROVIDER_URL);
+const provider = new ethers.JsonRpcProvider(PROVIDER_URL);
 const wallet = new ethers.Wallet(PRIVATE_KEY, provider);
-const contract = new ethers.Contract(CONTRACT_ADDRESS, ABI, wallet);
 
 function formatDate(timestamp) {
   return new Date(timestamp).toLocaleString();
 }
 
+function formatRemainingTime(ms) {
+  const totalSeconds = Math.floor(ms / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  return `${hours}h ${minutes}m ${seconds}s`;
+}
+
 async function getCooldown() {
   try {
     const res = await fetch(`https://monadbox.vercel.app/api/box-cooldown?fid=${FID}`);
-    if (!res.ok) throw new Error(`Status ${res.status}`);
     const data = await res.json();
     return data.lastOpen ?? null;
-  } catch (e) {
-    console.error("❌ Gagal fetch cooldown:", e);
+  } catch (err) {
+    console.error("❌ Gagal ambil cooldown:", err);
+    return null;
+  }
+}
+
+async function claimBox() {
+  try {
+    const now = Date.now();
+    const txPayload = {
+      fid: Number(FID),
+      timestamp: now,
+    };
+
+    const res = await fetch("https://monadbox.vercel.app/api/box-cooldown", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(txPayload),
+    });
+
+    return await res.json();
+  } catch (err) {
+    console.error("❌ Gagal claim:", err);
     return null;
   }
 }
@@ -49,88 +69,61 @@ async function getRankAndPoints() {
       },
       body: JSON.stringify([
         ["zscore", "leaderboard", FID],
-        ["zrevrank", "leaderboard", FID]
+        ["zrevrank", "leaderboard", FID],
       ]),
     });
 
-    if (!res.ok) throw new Error(`Status ${res.status}`);
-
     const data = await res.json();
-
     const points = data[0]?.result ?? "N/A";
-    const rankZeroBased = data[1]?.result;
-    const rank = rankZeroBased !== undefined && rankZeroBased !== null
-      ? rankZeroBased + 1
-      : "N/A";
+    const rank = data[1]?.result != null ? data[1].result + 1 : "N/A";
 
     return { points, rank };
-  } catch (e) {
-    console.error("❌ Gagal ambil rank dan poin:", e);
+  } catch (err) {
+    console.error("❌ Gagal ambil leaderboard:", err);
     return { points: "N/A", rank: "N/A" };
   }
 }
 
-async function claimBox() {
-  try {
-    const tx = await contract.claimBox(Number(FID));
-    console.log(`📝 Transaksi dikirim, menunggu konfirmasi... (tx: ${tx.hash})`);
-    const receipt = await tx.wait();
-    if (receipt.status === 1) {
-      console.log("✅ Klaim berhasil!");
-      return true;
-    } else {
-      console.log("❌ Transaksi gagal!");
-      return false;
-    }
-  } catch (e) {
-    console.error("❌ Gagal klaim:", e);
-    return false;
-  }
-}
-
-function formatTime(ms) {
-  const totalSeconds = Math.floor(ms / 1000);
-  const h = Math.floor(totalSeconds / 3600);
-  const m = Math.floor((totalSeconds % 3600) / 60);
-  const s = totalSeconds % 60;
-  return `${h}h ${m}m ${s}s`;
-}
-
 async function main() {
-  console.log("🚀 Bot auto claim started...");
+  console.log("🚀 Bot auto claim started...\n");
 
   while (true) {
     const lastOpen = await getCooldown();
+    const now = Date.now();
 
     if (!lastOpen) {
-      console.log("⚠️ Tidak dapat data cooldown, coba klaim langsung.");
+      console.log("⚠️ Tidak dapat data cooldown, coba claim langsung.");
     } else {
       const nextClaim = lastOpen + CLAIM_INTERVAL;
+
       console.log(`🕐 Last open at: ${formatDate(lastOpen)}`);
       console.log(`🕐 Next claim at: ${formatDate(nextClaim)}`);
 
-      if (Date.now() < nextClaim) {
-        const diffMs = nextClaim - Date.now();
-        console.log(`⏳ Masih cooldown, bisa klaim lagi dalam ${formatTime(diffMs)}`);
+      if (now < nextClaim) {
+        const remaining = nextClaim - now;
+        console.log(`⏳ Waktu cooldown tersisa: ${formatRemainingTime(remaining)}`);
 
         const { points, rank } = await getRankAndPoints();
         console.log(`🎯 Rank: ${rank} | Points: ${points}\n`);
 
-        await new Promise(r => setTimeout(r, diffMs));
+        await new Promise((r) => setTimeout(r, remaining));
         continue;
       }
     }
 
-    const success = await claimBox();
+    // Kirim klaim
+    const result = await claimBox();
 
-    if (success) {
-      const { points, rank } = await getRankAndPoints();
-      console.log(`🎯 Rank: ${rank} | Points: ${points}\n`);
+    if (result?.ok) {
+      console.log("✅ Klaim berhasil!");
     } else {
-      console.log("❌ Gagal klaim atau sudah klaim sebelumnya.\n");
+      console.log("❌ Klaim gagal atau sudah klaim sebelumnya.");
     }
 
-    await new Promise(r => setTimeout(r, CLAIM_INTERVAL));
+    const { points, rank } = await getRankAndPoints();
+    console.log(`🎯 Rank: ${rank} | Points: ${points}\n`);
+
+    await new Promise((r) => setTimeout(r, CLAIM_INTERVAL));
   }
 }
 
