@@ -2,10 +2,17 @@ require("dotenv").config();
 const ethers = require("ethers");
 const fetch = (...args) => import("node-fetch").then(({ default: fetch }) => fetch(...args));
 
-const { PRIVATE_KEY, PROVIDER_URL, FID, UPSTASH_AUTH } = process.env;
+const {
+  PRIVATE_KEY,
+  PROVIDER_URL,
+  CONTRACT_ADDRESS,
+  FID,
+  UPSTASH_AUTH
+} = process.env;
+
 const CLAIM_INTERVAL = 3 * 60 * 60 * 1000; // 3 jam
 
-if (!PRIVATE_KEY || !PROVIDER_URL || !FID || !UPSTASH_AUTH) {
+if (!PRIVATE_KEY || !PROVIDER_URL || !FID || !UPSTASH_AUTH || !CONTRACT_ADDRESS) {
   console.error("❌ Harap isi semua variabel di file .env");
   process.exit(1);
 }
@@ -37,25 +44,48 @@ async function getCooldown() {
 }
 
 async function claimBox() {
+  const ABI = ["function openBox() external"];
+  const contract = new ethers.Contract(CONTRACT_ADDRESS, ABI, wallet);
+
   try {
-    const now = Date.now();
-    const txPayload = {
-      fid: Number(FID),
-      timestamp: now,
-    };
+    console.log("🚀 Mencoba klaim via on-chain (openBox)...");
+    const tx = await contract.openBox();
+    console.log(`⏳ Menunggu konfirmasi transaksi... Hash: ${tx.hash}`);
+    await tx.wait();
+    console.log("✅ Klaim on-chain berhasil!");
+    return { ok: true, method: "on-chain", txHash: tx.hash };
+  } catch (onChainError) {
+    console.warn("⚠️ Klaim on-chain gagal. Mencoba fallback ke API...");
+    console.warn(onChainError);
 
-    const res = await fetch("https://monadbox.vercel.app/api/box-cooldown", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(txPayload),
-    });
+    try {
+      const now = Date.now();
+      const txPayload = {
+        fid: Number(FID),
+        timestamp: now,
+      };
 
-    return await res.json();
-  } catch (err) {
-    console.error("❌ Gagal claim:", err);
-    return null;
+      const res = await fetch("https://monadbox.vercel.app/api/box-cooldown", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(txPayload),
+      });
+
+      const result = await res.json();
+
+      if (result?.ok) {
+        console.log("✅ Klaim via API berhasil (fallback).");
+      } else {
+        console.log("❌ Klaim API fallback gagal atau sudah pernah klaim.");
+      }
+
+      return { ok: result?.ok ?? false, method: "api" };
+    } catch (apiError) {
+      console.error("❌ Gagal klaim via API fallback:", apiError);
+      return { ok: false, method: "none" };
+    }
   }
 }
 
@@ -85,7 +115,7 @@ async function getRankAndPoints() {
 }
 
 async function main() {
-  console.log("🚀 Bot auto claim started...\n");
+  console.log("🚀 Bot auto claim dimulai...\n");
 
   while (true) {
     const lastOpen = await getCooldown();
@@ -111,13 +141,13 @@ async function main() {
       }
     }
 
-    // Kirim klaim
     const result = await claimBox();
 
     if (result?.ok) {
-      console.log("✅ Klaim berhasil!");
+      console.log(`✅ Klaim berhasil via ${result.method}`);
+      if (result.txHash) console.log(`🔗 Tx Hash: ${result.txHash}`);
     } else {
-      console.log("❌ Klaim gagal atau sudah klaim sebelumnya.");
+      console.log("❌ Klaim gagal via semua metode.");
     }
 
     const { points, rank } = await getRankAndPoints();
