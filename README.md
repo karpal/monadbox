@@ -24,7 +24,7 @@ jalankan
 ```bash
 node bot.js
 
-untuk kelar tanpa close 
+untuk keluar tanpa close 
 CTRL+AD
 
 KaRPaL
